@@ -1,0 +1,33 @@
+# Logs and crash reports
+*.log
+full_crash_log.txt
+
+# Python cache and compiled files
+*.pyc
+__pycache__/
+
+# Compressed archives
+*.zip
+*.rar
+*.7z
+*.tar.gz
+
+# Temporary or backup files
+*.bak
+*.tmp
+*.old
+
+# System-specific files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE and editor folders
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Virtual environments
+venv/
+.env/
