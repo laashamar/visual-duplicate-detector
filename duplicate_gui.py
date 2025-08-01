@@ -7,7 +7,6 @@ import logging
 import time
 from datetime import datetime
 
-from image_series import display_group, ImageInfoWidget
 from PySide6.QtCore import QThread, Qt
 from PySide6.QtWidgets import (
     QApplication, QWidget, QPushButton, QFileDialog,
@@ -21,7 +20,9 @@ import styles
 
 from logger_setup import setup_global_logger
 from performance_logger import PerformanceLogger
-from ui_panels import SettingsPanel, ReviewPanel, StatusPanel
+from ui_panels import SettingsPanel, StatusPanel
+# --- NEW: Import the ReviewDialog ---
+from review_dialog import ReviewDialog
 
 
 class DuplicateWindow(QWidget):
@@ -33,7 +34,6 @@ class DuplicateWindow(QWidget):
         # --- Instance variables ---
         self.all_groups = []
         self.current_group_index = -1
-        self.selected_image_in_group = None
         self.folder_path = None
         self.check_thread = None
         self.move_thread = None
@@ -68,11 +68,11 @@ class DuplicateWindow(QWidget):
         self.layout.setSpacing(10)
 
         self.settings_panel = SettingsPanel()
-        self.review_panel = ReviewPanel()
+        # --- REMOVED: The old ReviewPanel is no longer part of the main window ---
         self.status_panel = StatusPanel()
 
         self.layout.addWidget(self.settings_panel)
-        self.layout.addWidget(self.review_panel, 1) # Review panel should stretch
+        # --- REMOVED: No longer adding the ReviewPanel to the layout ---
         self.layout.addWidget(self.status_panel)
 
     def connect_signals(self):
@@ -81,9 +81,7 @@ class DuplicateWindow(QWidget):
         self.settings_panel.slider_threshold.valueChanged.connect(self.update_threshold_info)
         self.settings_panel.btn_start.clicked.connect(self.start_duplicate_check)
 
-        self.review_panel.btn_approve_group.clicked.connect(self.approve_group)
-        self.review_panel.btn_skip_group.clicked.connect(self.next_group)
-
+        # --- REMOVED: Signals for the old ReviewPanel ---
         self.status_panel.btn_move_duplicates.clicked.connect(self.move_approved_duplicates)
 
     def set_button_state(self, button, state):
@@ -102,7 +100,7 @@ class DuplicateWindow(QWidget):
         is_auto = self.settings_panel.mode_combo.currentText() == "Automatic selection"
         self.settings_panel.strategy_label.setVisible(is_auto)
         self.settings_panel.strategy_combo.setVisible(is_auto)
-        self.review_panel.setVisible(not is_auto)
+        # --- CHANGED: The old review panel is gone, so we don't need to hide it ---
 
     def append_log_message(self, message):
         self.status_panel.log_window.append(message)
@@ -222,11 +220,12 @@ class DuplicateWindow(QWidget):
         logging.info(status_text)
         self.status_panel.status.setText(status_text)
         self.status_panel.progress_bar.setValue(100)
+        
         if self.all_groups:
-            self.current_group_index = 0
-            self.display_current_group()
+            # --- NEW: Start the new dialog-based review process ---
+            self.start_manual_review_session()
         else:
-            self.review_panel.group_status_label.setText("Found no duplicate groups.")
+            QMessageBox.information(self, "No Duplicates Found", "The scan completed, but no duplicate groups were found.")
             self.log_performance_if_finished()
 
     def handle_automatic_selection_finished(self, files_for_removal, check_stats):
@@ -268,51 +267,52 @@ class DuplicateWindow(QWidget):
         self.status_panel.progress_bar.setValue(0)
         self.reactivate_ui_after_check()
 
-    def on_thumbnail_clicked(self, file_path):
-        self.selected_image_in_group = file_path
-        layout = self.review_panel.group_display_layout
-        for i in range(layout.count()):
-            widget = layout.itemAt(i).widget()
-            if isinstance(widget, ImageInfoWidget):
-                style_key = 'image_keep' if widget.file_path == file_path else 'image_discard'
-                widget.set_style(style_key)
-        self.review_panel.btn_approve_group.setEnabled(True)
+    # --- NEW: Method to manage the new review dialog session ---
+    def start_manual_review_session(self):
+        self.current_group_index = 0
+        self.process_next_group()
 
-    def display_current_group(self):
+    # --- NEW: Method to show the dialog for the current group ---
+    def process_next_group(self):
         if not (0 <= self.current_group_index < len(self.all_groups)):
-            self.review_panel.group_status_label.setText("[DONE] Finished with all groups!")
-            display_group([], self.review_panel.group_display_widget, self.on_thumbnail_clicked, self.STYLES)
-            self.review_panel.btn_approve_group.setEnabled(False)
-            self.review_panel.btn_skip_group.setEnabled(False)
+            # This is called when all groups have been reviewed
+            self.status_panel.status.setText(f"[DONE] Finished reviewing all {len(self.all_groups)} groups.")
             if self.match_engine.get_files_for_removal():
                 self.set_button_state(self.status_panel.btn_move_duplicates, 'highlight')
             else:
+                QMessageBox.information(self, "Review Complete", "You have finished reviewing all groups, but did not select any files for removal.")
                 self.log_performance_if_finished()
             return
-        self.selected_image_in_group = None
-        self.review_panel.btn_approve_group.setEnabled(False)
-        self.review_panel.btn_skip_group.setEnabled(True)
 
         active_group_paths = self.all_groups[self.current_group_index]
-        active_group_metadata = [self.all_file_data[path] for path in active_group_paths if path in self.all_file_data]
+        
+        # Create and configure the dialog for the current group
+        dialog = ReviewDialog(self.all_file_data, self.STYLES, self)
+        dialog.group_approved.connect(self.handle_group_approved)
+        dialog.group_skipped.connect(self.handle_group_skipped)
+        
+        # This call shows the dialog and blocks until the user makes a choice
+        dialog.review_group(active_group_paths, self.current_group_index, len(self.all_groups))
 
-        self.review_panel.group_status_label.setText(f"Showing group {self.current_group_index + 1} of {len(self.all_groups)}")
-        display_group(active_group_metadata, self.review_panel.group_display_widget, self.on_thumbnail_clicked, self.STYLES)
-
-    def next_group(self):
-        self.current_group_index += 1
-        self.display_current_group()
-
-    def approve_group(self):
-        if not self.selected_image_in_group:
-            QMessageBox.warning(self, "Selection Missing", "You must click on the image you want to keep.")
-            return
+    # --- NEW: Handler for when the user approves a group in the dialog ---
+    def handle_group_approved(self, path_to_keep):
         active_group = self.all_groups[self.current_group_index]
         for file_path in active_group:
-            if file_path != self.selected_image_in_group:
+            if file_path != path_to_keep:
                 self.match_engine.add_file_for_removal(file_path)
-        logging.info(f"GROUP {self.current_group_index + 1}: Keeping '{os.path.basename(self.selected_image_in_group)}'")
-        self.next_group()
+        logging.info(f"GROUP {self.current_group_index + 1}: Keeping '{os.path.basename(path_to_keep)}'")
+        
+        self.current_group_index += 1
+        self.process_next_group()
+
+    # --- NEW: Handler for when the user skips a group in the dialog ---
+    def handle_group_skipped(self):
+        logging.info(f"GROUP {self.current_group_index + 1}: Skipped.")
+        self.current_group_index += 1
+        self.process_next_group()
+    
+    # --- REMOVED: All old methods related to the built-in review panel ---
+    # on_thumbnail_clicked, display_current_group, next_group, approve_group
 
     def move_approved_duplicates(self):
         files_for_removal = self.match_engine.get_files_for_removal()
