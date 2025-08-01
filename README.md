@@ -72,4 +72,6 @@ Distributed under the MIT License. See [LICENSE](LICENSE) for details.
 ## 🙏 Credits
 
 Developed by [laashamar](https://github.com/laashamar)  
+<<<<<<< HEAD
 Contributions and feedback are welcome!
+
