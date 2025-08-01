@@ -55,8 +55,9 @@ class HoverLabel(QLabel):
     def enterEvent(self, event):
         if self.file_path and os.path.exists(self.file_path):
             if not self.popup and self.window():
-                self.popup = QLabel(self.window(), Qt.Window | Qt.ToolTip)
-                self.popup.setStyleSheet("border: 2px solid #333; background-color: white;")
+                self.popup = QLabel(self.window(), Qt.Window | Qt.FramelessWindowHint)
+                self.popup.setAttribute(Qt.WA_TranslucentBackground)
+                self.popup.setStyleSheet("background-color: transparent;")
                 self.popup.setFixedSize(400, 400)
 
             if self.popup:
@@ -84,7 +85,7 @@ class ImageInfoWidget(QWidget):
     """A widget that displays an image (HoverLabel) and text with metadata."""
     clicked = Signal(str)
 
-    def __init__(self, metadata: FileMetadata, styles, parent=None):
+    def __init__(self, metadata: FileMetadata, styles, thumbnail_size=140, parent=None):
         super().__init__(parent)
         self.file_path = metadata.path
         self.styles = styles
@@ -95,10 +96,12 @@ class ImageInfoWidget(QWidget):
 
         self.image_label = HoverLabel()
         self.image_label.set_file_path(metadata.path)
-        # Uses the robust loading function for the thumbnail
-        pix = create_pixmap_from_path(metadata.path, 140)
+        
+        pix = create_pixmap_from_path(metadata.path, thumbnail_size)
         self.image_label.setPixmap(pix)
-        self.image_label.setFixedSize(150, 150)
+        # Set size based on the thumbnail, adding a little extra for the border
+        self.image_label.setFixedSize(thumbnail_size + 10, thumbnail_size + 10)
+        
         self.image_label.setAlignment(Qt.AlignCenter)
         self.image_label.clicked.connect(self.clicked.emit)
 
@@ -150,12 +153,34 @@ def display_group(group_metadata_list, container_widget, click_handler, styles):
         if child.widget():
             child.widget().deleteLater()
 
-    MAX_COLUMNS = 5
+    # Determine thumbnail size based on the number of images
+    num_images = len(group_metadata_list)
+    if num_images > 10:
+        thumbnail_size = 80  # Smallest size for very large groups
+    elif num_images > 5:
+        thumbnail_size = 110 # Medium size for medium groups
+    else:
+        thumbnail_size = 140 # Largest size for small groups
+
+    # Estimate the horizontal space one item takes up (thumbnail + padding)
+    item_width_estimate = thumbnail_size + 20
+    
+    # Get the usable width of the container panel, subtracting a margin
+    container_width = container_widget.width() - 20
+    
+    # Calculate how many columns can fit, ensuring it's at least 1
+    if item_width_estimate > 0:
+        num_columns = max(1, container_width // item_width_estimate)
+    else:
+        num_columns = 1 # Fallback in case of an error
+    
+    MAX_COLUMNS = num_columns
+    
     row = 0
     col = 0
 
     for metadata in group_metadata_list:
-        info_widget = ImageInfoWidget(metadata, styles)
+        info_widget = ImageInfoWidget(metadata, styles, thumbnail_size)
         info_widget.clicked.connect(click_handler)
 
         layout.addWidget(info_widget, row, col)
