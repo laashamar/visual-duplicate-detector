@@ -15,13 +15,12 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QColor
 from match_engine import MatchEngine
 from config import DUPLICATES_FOLDER_NAME, MIN_SIZE_BYTES, TARGET_BASE_DIR
-from workers import FileMover, DuplicateChecker
+from workers import FileMover, DuplicateChecker, FileSorter
 import styles
 
 from logger_setup import setup_global_logger
 from performance_logger import PerformanceLogger
 from ui_panels import SettingsPanel, StatusPanel
-# --- NEW: Import the ReviewDialog ---
 from review_dialog import ReviewDialog
 
 
@@ -37,7 +36,8 @@ class DuplicateWindow(QWidget):
         self.folder_path = None
         self.check_thread = None
         self.move_thread = None
-        self.match_engine = None
+        self.sort_thread = None # --- NEW: Thread for the sorter worker ---
+        self.match_engine = MatchEngine()
         self.performance_logger = PerformanceLogger()
         self.active_run_stats = {}
         self.start_time = 0
@@ -68,11 +68,9 @@ class DuplicateWindow(QWidget):
         self.layout.setSpacing(10)
 
         self.settings_panel = SettingsPanel()
-        # --- REMOVED: The old ReviewPanel is no longer part of the main window ---
         self.status_panel = StatusPanel()
 
         self.layout.addWidget(self.settings_panel)
-        # --- REMOVED: No longer adding the ReviewPanel to the layout ---
         self.layout.addWidget(self.status_panel)
 
     def connect_signals(self):
@@ -81,7 +79,6 @@ class DuplicateWindow(QWidget):
         self.settings_panel.slider_threshold.valueChanged.connect(self.update_threshold_info)
         self.settings_panel.btn_start.clicked.connect(self.start_duplicate_check)
 
-        # --- REMOVED: Signals for the old ReviewPanel ---
         self.status_panel.btn_move_duplicates.clicked.connect(self.move_approved_duplicates)
 
     def set_button_state(self, button, state):
@@ -100,7 +97,11 @@ class DuplicateWindow(QWidget):
         is_auto = self.settings_panel.mode_combo.currentText() == "Automatic selection"
         self.settings_panel.strategy_label.setVisible(is_auto)
         self.settings_panel.strategy_combo.setVisible(is_auto)
-        # --- CHANGED: The old review panel is gone, so we don't need to hide it ---
+        if not is_auto:
+             self.settings_panel.chk_sort_into_folders.setVisible(False)
+        else:
+            self.settings_panel.on_strategy_changed()
+
 
     def append_log_message(self, message):
         self.status_panel.log_window.append(message)
@@ -138,6 +139,7 @@ class DuplicateWindow(QWidget):
         self.settings_panel.slider_threshold.setEnabled(False)
         self.settings_panel.mode_combo.setEnabled(False)
         self.settings_panel.strategy_combo.setEnabled(False)
+        self.settings_panel.chk_sort_into_folders.setEnabled(False) # --- NEW ---
 
         self.all_groups.clear()
         self.current_group_index = -1
@@ -190,7 +192,6 @@ class DuplicateWindow(QWidget):
         if image_files:
             html += f"<b>Image files ({total_images}):</b><ul>" + "".join([f"<li>{ext.upper()}: {count}</li>" for ext, count in sorted(image_files.items())]) + "</ul>"
         if other_files:
-            # --- CHANGED: Removed the limit to show all file types ---
             html += f"<b>Other files ({total_other}):</b><ul>" + "".join([f"<li>{ext.upper()}: {count}</li>" for ext, count in sorted(other_files.items())]) + "</ul>"
 
         self.status_panel.scan_summary_label.setText(html)
@@ -221,33 +222,41 @@ class DuplicateWindow(QWidget):
         self.status_panel.progress_bar.setValue(100)
         
         if self.all_groups:
-            # --- NEW: Start the new dialog-based review process ---
             self.start_manual_review_session()
         else:
             QMessageBox.information(self, "No Duplicates Found", "The scan completed, but no duplicate groups were found.")
             self.log_performance_if_finished()
 
-    def handle_automatic_selection_finished(self, files_for_removal, check_stats):
+    # --- CHANGED: Updated signature to accept new data ---
+    def handle_automatic_selection_finished(self, files_for_removal, files_to_sort, check_stats):
         self.reactivate_ui_after_check()
         self.active_run_stats.update(check_stats)
         self.active_run_stats["groups_found"] = check_stats.get("groups_found", 0)
-        validated_count = check_stats.get("files_processed", 0)
-        log_text = f"{validated_count} image files were validated and sent for processing."
-        self.append_log_message(log_text)
-        logging.info(log_text)
+        
+        # --- NEW: Logic to handle the new sorting feature ---
+        if self.settings_panel.chk_sort_into_folders.isChecked() and files_to_sort:
+            self.start_file_sorting(files_to_sort)
+            # Don't mark the sorted files for removal from their original location
+        else:
+            num_files = len(files_for_removal)
+            status_text = f"[OK] Automatic selection finished. {num_files} files marked for removal."
+            logging.info(status_text)
+            self.status_panel.status.setText(status_text)
+            if num_files == 0:
+                 QMessageBox.information(self, "No Duplicates", "Found no files to remove based on the selected strategy.")
+
         for file_path in files_for_removal:
             self.match_engine.add_file_for_removal(file_path)
-        num_files = len(files_for_removal)
-        status_text = f"[OK] Automatic selection finished. {num_files} files marked for removal."
-        logging.info(status_text)
-        self.status_panel.status.setText(status_text)
+        
         self.status_panel.progress_bar.setValue(100)
-        if num_files > 0:
+        
+        if self.match_engine.get_files_for_removal():
             self.set_button_state(self.status_panel.btn_move_duplicates, 'highlight')
-            QMessageBox.information(self, "Automatic Selection Complete", f"{num_files} files are ready to be moved to the duplicates folder.")
+            if not (self.settings_panel.chk_sort_into_folders.isChecked() and files_to_sort):
+                QMessageBox.information(self, "Automatic Selection Complete", f"{len(files_for_removal)} files are ready to be moved to the duplicates folder.")
         else:
-            QMessageBox.information(self, "No Duplicates", "Found no files to remove based on the selected strategy.")
-            self.log_performance_if_finished()
+             if not (self.settings_panel.chk_sort_into_folders.isChecked() and files_to_sort):
+                self.log_performance_if_finished()
 
     def reactivate_ui_after_check(self):
         self.set_button_state(self.settings_panel.btn_folder, 'toned_down')
@@ -259,6 +268,7 @@ class DuplicateWindow(QWidget):
         self.settings_panel.slider_threshold.setEnabled(True)
         self.settings_panel.mode_combo.setEnabled(True)
         self.settings_panel.strategy_combo.setEnabled(True)
+        self.settings_panel.chk_sort_into_folders.setEnabled(True) # --- NEW ---
 
     def handle_check_error(self, error_message):
         QMessageBox.critical(self, "Error During Check", error_message)
@@ -266,15 +276,12 @@ class DuplicateWindow(QWidget):
         self.status_panel.progress_bar.setValue(0)
         self.reactivate_ui_after_check()
 
-    # --- NEW: Method to manage the new review dialog session ---
     def start_manual_review_session(self):
         self.current_group_index = 0
         self.process_next_group()
 
-    # --- NEW: Method to show the dialog for the current group ---
     def process_next_group(self):
         if not (0 <= self.current_group_index < len(self.all_groups)):
-            # This is called when all groups have been reviewed
             self.status_panel.status.setText(f"[DONE] Finished reviewing all {len(self.all_groups)} groups.")
             if self.match_engine.get_files_for_removal():
                 self.set_button_state(self.status_panel.btn_move_duplicates, 'highlight')
@@ -285,15 +292,12 @@ class DuplicateWindow(QWidget):
 
         active_group_paths = self.all_groups[self.current_group_index]
         
-        # Create and configure the dialog for the current group
         dialog = ReviewDialog(self.all_file_data, self.STYLES, self)
         dialog.group_approved.connect(self.handle_group_approved)
         dialog.group_skipped.connect(self.handle_group_skipped)
         
-        # This call shows the dialog and blocks until the user makes a choice
         dialog.review_group(active_group_paths, self.current_group_index, len(self.all_groups))
 
-    # --- NEW: Handler for when the user approves a group in the dialog ---
     def handle_group_approved(self, path_to_keep):
         active_group = self.all_groups[self.current_group_index]
         for file_path in active_group:
@@ -304,14 +308,36 @@ class DuplicateWindow(QWidget):
         self.current_group_index += 1
         self.process_next_group()
 
-    # --- NEW: Handler for when the user skips a group in the dialog ---
     def handle_group_skipped(self):
         logging.info(f"GROUP {self.current_group_index + 1}: Skipped.")
         self.current_group_index += 1
         self.process_next_group()
-    
-    # --- REMOVED: All old methods related to the built-in review panel ---
-    # on_thumbnail_clicked, display_current_group, next_group, approve_group
+
+    # --- NEW: Method to start the FileSorter worker ---
+    def start_file_sorting(self, files_to_sort):
+        self.status_panel.status.setText(f"Sorting {len(files_to_sort)*2} files into subfolders...")
+        self.set_button_state(self.status_panel.btn_move_duplicates, 'disabled')
+
+        self.sort_thread = QThread()
+        self.file_sorter = FileSorter(files_to_sort, self.folder_path)
+        self.file_sorter.moveToThread(self.sort_thread)
+        self.file_sorter.progress_log.connect(self.append_log_message)
+        self.file_sorter.finished.connect(self.handle_sort_finished)
+        self.sort_thread.started.connect(self.file_sorter.run)
+        self.sort_thread.finished.connect(self.sort_thread.quit)
+        self.sort_thread.finished.connect(self.sort_thread.deleteLater)
+        self.sort_thread.finished.connect(lambda: setattr(self, 'sort_thread', None))
+        self.sort_thread.start()
+
+    # --- NEW: Handler for when the sorting process is complete ---
+    def handle_sort_finished(self, moved_counter, failed_counter):
+        logging.info(f"File sorting complete. {moved_counter} files sorted, {failed_counter} failed.")
+        QMessageBox.information(self, "Sorting Complete", f"Sorted {moved_counter} files into 'Originals' and 'Last Edited' subfolders. {failed_counter} failed.")
+        self.status_panel.status.setText(f"Sorting complete. {moved_counter} files sorted.")
+        if self.match_engine.get_files_for_removal():
+             self.set_button_state(self.status_panel.btn_move_duplicates, 'highlight')
+        else:
+            self.log_performance_if_finished()
 
     def move_approved_duplicates(self):
         files_for_removal = self.match_engine.get_files_for_removal()
@@ -363,6 +389,10 @@ class DuplicateWindow(QWidget):
         if self.move_thread and self.move_thread.isRunning():
             self.move_thread.quit()
             self.move_thread.wait()
+        # --- NEW: Ensure sorter thread is closed ---
+        if self.sort_thread and self.sort_thread.isRunning():
+            self.sort_thread.quit()
+            self.sort_thread.wait()
         event.accept()
 
     def handle_progress_updated(self, value, text):
