@@ -11,6 +11,8 @@ from data_models import FileMetadata
 class SelectionStrategy(Enum):
     """Defines the available, improved strategies for automatic selection."""
     KEEP_BEST_QUALITY = "Keep best quality"
+    # --- NEW: Added new strategy ---
+    KEEP_LAST_EDITED = "Keep last edited"
     KEEP_ALL_UNIQUE_VERSIONS = "Keep unique versions (original + edited)"
 
     def __str__(self):
@@ -93,57 +95,77 @@ class AutomaticSelector:
     def _strategy_keep_best_quality(self, metadata_list):
         """Strategy to keep only the single, best image."""
         best_file = self._get_best_in_group(metadata_list)
-        return [best_file.path] if best_file else []
+        files_to_keep = [best_file.path] if best_file else []
+        # Return files to keep, and an empty dict for sorting info
+        return files_to_keep, {}
+
+    # --- NEW: Strategy to keep the last edited file ---
+    def _strategy_keep_last_edited(self, metadata_list):
+        """Strategy to keep only the most recently modified image."""
+        if not metadata_list:
+            return [], {}
+        last_edited = max(metadata_list, key=lambda m: m.mod_time)
+        files_to_keep = [last_edited.path]
+        # Return files to keep, and an empty dict for sorting info
+        return files_to_keep, {}
 
     def _strategy_keep_unique_versions(self, metadata_list):
         """
         Strategy to keep the best "original" and the best "edited" version.
+        Now returns information needed for sorting.
         """
         if len(metadata_list) <= 1:
-            return [m.path for m in metadata_list]
+            return [m.path for m in metadata_list], {}
 
         best_original = self._get_best_in_group(metadata_list)
-
-        # Finds the last modified file, as a proxy for "last edited"
         last_edited = max(metadata_list, key=lambda m: m.mod_time)
 
         # Uses a set to handle cases where the original and edited are the same file
         files_to_keep = {best_original.path, last_edited.path}
-        return list(files_to_keep)
+        
+        # --- NEW: Create a dictionary with roles for sorting ---
+        files_to_sort = {'original': best_original.path, 'edited': last_edited.path}
+        
+        return list(files_to_keep), files_to_sort
 
     def run_automatic_selection(self, groups, strategy, all_file_data):
         """
         Main method that iterates through groups and selects files based on the chosen strategy.
+        Now returns both a list of files for removal and a list of files to be sorted.
         """
         all_files_for_removal = set()
+        all_files_to_sort = []
 
         strategy_map = {
             SelectionStrategy.KEEP_BEST_QUALITY: self._strategy_keep_best_quality,
+            SelectionStrategy.KEEP_LAST_EDITED: self._strategy_keep_last_edited,
             SelectionStrategy.KEEP_ALL_UNIQUE_VERSIONS: self._strategy_keep_unique_versions
         }
 
         strategy_func = strategy_map.get(strategy)
         if not strategy_func:
             logging.error(f"Unknown strategy: {strategy}. Cannot perform automatic selection.")
-            return []
+            return [], []
 
         for group in groups:
             if len(group) < 2:
                 continue
 
-            # Fetches all relevant metadata for the current group
             metadata_list = [all_file_data.get(path) for path in group if all_file_data.get(path)]
 
             if len(metadata_list) < 2:
                 logging.warning(f"Did not find enough valid metadata for group, skipping: {group}")
                 continue
 
-            # Runs the selected strategy function to get the list of files to keep
-            files_in_group_to_keep = strategy_func(metadata_list)
+            # --- CHANGED: Strategy now returns two values ---
+            files_in_group_to_keep, files_in_group_to_sort = strategy_func(metadata_list)
 
-            # Adds all other files in the group to the removal list
+            if files_in_group_to_sort:
+                all_files_to_sort.append(files_in_group_to_sort)
+
             for file_metadata in metadata_list:
                 if file_metadata.path not in files_in_group_to_keep:
                     all_files_for_removal.add(file_metadata.path)
-
-        return list(all_files_for_removal)
+        
+        # --- CHANGED: Return both lists ---
+        return list(all_files_for_removal), all_files_to_sort
