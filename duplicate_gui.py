@@ -190,10 +190,9 @@ class DuplicateWindow(QWidget):
         if image_files:
             html += f"<b>Image files ({total_images}):</b><ul>" + "".join([f"<li>{ext.upper()}: {count}</li>" for ext, count in sorted(image_files.items())]) + "</ul>"
         if other_files:
-            html += f"<b>Other files ({total_other}):</b><ul>" + "".join([f"<li>{ext.upper()}: {count}</li>" for ext, count in sorted(other_files.items())[:5]])
-            if len(other_files) > 5:
-                html += "<li>... and more</li>"
-            html += "</ul>"
+            # --- CHANGED: Removed the limit to show all file types ---
+            html += f"<b>Other files ({total_other}):</b><ul>" + "".join([f"<li>{ext.upper()}: {count}</li>" for ext, count in sorted(other_files.items())]) + "</ul>"
+
         self.status_panel.scan_summary_label.setText(html)
         log_text = f"Folder analysis complete: Total {total_files} files. Image files: {total_images}. Other: {total_other}."
         logging.info(log_text)
