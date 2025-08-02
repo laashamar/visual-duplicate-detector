@@ -5,7 +5,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSlider,
     QComboBox, QScrollArea, QWidget, QProgressBar, QTextEdit, QGridLayout,
-    QCheckBox
+    QCheckBox, QRadioButton, QLineEdit
 )
 from automatic_selector import SelectionStrategy
 
@@ -43,11 +43,36 @@ class SettingsPanel(QFrame):
         mode_layout.setColumnStretch(4, 1)
         layout.addLayout(mode_layout)
 
-        # --- NEW: Checkbox for sorting into subfolders ---
-        self.chk_sort_into_folders = QCheckBox("Sort kept files into 'Originals' and 'Last Edited' subfolders within the scanned directory")
-        self.chk_sort_into_folders.setVisible(False) # Initially hidden
+        # Checkbox for sorting into subfolders
+        self.chk_sort_into_folders = QCheckBox("Sort kept files into 'Originals' and 'Last Edited' subfolders")
+        self.chk_sort_into_folders.setVisible(False)
         layout.addWidget(self.chk_sort_into_folders)
         
+        # --- NEW: Frame for handling remaining files ---
+        self.remains_options_frame = QFrame()
+        self.remains_options_frame.setVisible(False) # Hidden by default
+        remains_layout = QVBoxLayout(self.remains_options_frame)
+        remains_layout.setContentsMargins(20, 5, 5, 5) # Indent for clarity
+        
+        remains_label = QLabel("<b>For the remaining images in the group:</b>")
+        remains_layout.addWidget(remains_label)
+        
+        self.radio_recycle = QRadioButton("Move to Recycle Bin")
+        self.radio_move = QRadioButton("Move to a specific folder:")
+        self.radio_recycle.setChecked(True)
+        remains_layout.addWidget(self.radio_recycle)
+        remains_layout.addWidget(self.radio_move)
+
+        move_dest_layout = QHBoxLayout()
+        self.remains_dest_path = QLineEdit()
+        self.btn_select_remains_dest = QPushButton("...")
+        self.btn_select_remains_dest.setFixedWidth(30)
+        move_dest_layout.addWidget(self.remains_dest_path)
+        move_dest_layout.addWidget(self.btn_select_remains_dest)
+        remains_layout.addLayout(move_dest_layout)
+        
+        layout.addWidget(self.remains_options_frame)
+
         # Sensitivity (Threshold)
         threshold_layout = QHBoxLayout()
         self.label_threshold = QLabel()
@@ -66,16 +91,23 @@ class SettingsPanel(QFrame):
         self.btn_start = QPushButton("🚀 Start Duplicate Check")
         layout.addWidget(self.btn_start)
 
-        # --- NEW: Connect signal to show/hide the checkbox ---
+        # Connect signals to show/hide the new options
         self.strategy_combo.currentIndexChanged.connect(self.on_strategy_changed)
-        # Call it once to set the initial state
-        self.on_strategy_changed()
+        self.chk_sort_into_folders.stateChanged.connect(self.on_sort_checkbox_changed)
+        self.on_strategy_changed() # Set initial state
 
     def on_strategy_changed(self):
         """Shows or hides the sorting checkbox based on the selected strategy."""
         selected_strategy = self.strategy_combo.currentData(Qt.UserRole)
         is_versions_strategy = (selected_strategy == SelectionStrategy.KEEP_ALL_UNIQUE_VERSIONS)
         self.chk_sort_into_folders.setVisible(is_versions_strategy)
+        if not is_versions_strategy:
+            self.remains_options_frame.setVisible(False)
+
+    def on_sort_checkbox_changed(self):
+        """Shows or hides the options for remaining files."""
+        is_checked = self.chk_sort_into_folders.isChecked()
+        self.remains_options_frame.setVisible(is_checked)
 
 class StatusPanel(QFrame):
     """The panel for status, log, and the final move button."""
@@ -85,18 +117,14 @@ class StatusPanel(QFrame):
         layout = QVBoxLayout(self)
         title = QLabel("<b>3. Status and Log</b>")
         layout.addWidget(title)
-
         status_layout = QHBoxLayout()
-
         scan_scroll_area = QScrollArea()
         scan_scroll_area.setWidgetResizable(True)
-
         self.scan_summary_label = QLabel("Waiting for folder selection...")
         self.scan_summary_label.setWordWrap(True)
         self.scan_summary_label.setAlignment(Qt.AlignTop)
         scan_scroll_area.setWidget(self.scan_summary_label)
         status_layout.addWidget(scan_scroll_area, 1)
-
         progress_layout = QVBoxLayout()
         self.progress_bar = QProgressBar()
         self.progress_bar.setValue(0)
@@ -105,12 +133,10 @@ class StatusPanel(QFrame):
         progress_layout.addWidget(self.status)
         status_layout.addLayout(progress_layout, 1)
         layout.addLayout(status_layout)
-
         self.log_window = QTextEdit()
         self.log_window.setReadOnly(True)
         self.log_window.setFixedHeight(100)
         layout.addWidget(self.log_window)
-
-        self.btn_move_duplicates = QPushButton("🗑️ Move Selected Duplicates")
+        self.btn_move_duplicates = QPushButton("🗑️ Process Duplicates")
         self.btn_move_duplicates.setEnabled(False)
         layout.addWidget(self.btn_move_duplicates)
