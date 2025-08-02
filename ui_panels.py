@@ -4,7 +4,8 @@
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSlider,
-    QComboBox, QScrollArea, QWidget, QProgressBar, QTextEdit, QGridLayout
+    QComboBox, QScrollArea, QWidget, QProgressBar, QTextEdit, QGridLayout,
+    QCheckBox
 )
 from automatic_selector import SelectionStrategy
 
@@ -26,21 +27,27 @@ class SettingsPanel(QFrame):
         layout.addLayout(folder_layout)
 
         # Mode and Strategy
-        mode_layout = QHBoxLayout()
-        mode_layout.addWidget(QLabel("<b>Mode:</b>"))
+        mode_layout = QGridLayout()
+        mode_layout.addWidget(QLabel("<b>Mode:</b>"), 0, 0)
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["Automatic selection", "Manual review"])
-        mode_layout.addWidget(self.mode_combo)
+        mode_layout.addWidget(self.mode_combo, 0, 1)
 
         self.strategy_label = QLabel("<b>Strategy:</b>")
+        mode_layout.addWidget(self.strategy_label, 0, 2)
+        
         self.strategy_combo = QComboBox()
         for strategy in SelectionStrategy:
             self.strategy_combo.addItem(str(strategy), strategy)
-        mode_layout.addWidget(self.strategy_label)
-        mode_layout.addWidget(self.strategy_combo)
-        mode_layout.addStretch()
+        mode_layout.addWidget(self.strategy_combo, 0, 3)
+        mode_layout.setColumnStretch(4, 1)
         layout.addLayout(mode_layout)
 
+        # --- NEW: Checkbox for sorting into subfolders ---
+        self.chk_sort_into_folders = QCheckBox("Sort kept files into 'Originals' and 'Last Edited' subfolders within the scanned directory")
+        self.chk_sort_into_folders.setVisible(False) # Initially hidden
+        layout.addWidget(self.chk_sort_into_folders)
+        
         # Sensitivity (Threshold)
         threshold_layout = QHBoxLayout()
         self.label_threshold = QLabel()
@@ -59,41 +66,16 @@ class SettingsPanel(QFrame):
         self.btn_start = QPushButton("🚀 Start Duplicate Check")
         layout.addWidget(self.btn_start)
 
-class ReviewPanel(QFrame):
-    """The panel for manual review of duplicate groups."""
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFrameShape(QFrame.StyledPanel)
-        layout = QVBoxLayout(self)
-        title = QLabel("<b>2. Manual Review</b>")
-        layout.addWidget(title)
+        # --- NEW: Connect signal to show/hide the checkbox ---
+        self.strategy_combo.currentIndexChanged.connect(self.on_strategy_changed)
+        # Call it once to set the initial state
+        self.on_strategy_changed()
 
-        self.group_status_label = QLabel("No groups to display")
-        layout.addWidget(self.group_status_label)
-
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-
-        self.group_display_widget = QWidget()
-        self.group_display_layout = QGridLayout(self.group_display_widget)
-        self.group_display_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-
-        scroll_area.setWidget(self.group_display_widget)
-        layout.addWidget(scroll_area, 1)
-
-        self.btn_approve_group = QPushButton("✅ Approve Group")
-        self.btn_skip_group = QPushButton("❌ Skip Group")
-        self.btn_approve_group.setEnabled(False)
-        self.btn_skip_group.setEnabled(False)
-
-        choice_layout = QHBoxLayout()
-        choice_layout.addStretch()
-        choice_layout.addWidget(self.btn_approve_group)
-        choice_layout.addWidget(self.btn_skip_group)
-        choice_layout.addStretch()
-        layout.addLayout(choice_layout)
+    def on_strategy_changed(self):
+        """Shows or hides the sorting checkbox based on the selected strategy."""
+        selected_strategy = self.strategy_combo.currentData(Qt.UserRole)
+        is_versions_strategy = (selected_strategy == SelectionStrategy.KEEP_ALL_UNIQUE_VERSIONS)
+        self.chk_sort_into_folders.setVisible(is_versions_strategy)
 
 class StatusPanel(QFrame):
     """The panel for status, log, and the final move button."""
