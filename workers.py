@@ -2,100 +2,69 @@
 import os
 import shutil
 import logging
-import time
 from PySide6.QtCore import QObject, Signal
+
+# --- NEW: Import send2trash for Recycle Bin functionality ---
+try:
+    from send2trash import send2trash
+except ImportError:
+    send2trash = None
 
 from file_handler import scan_directory, ensure_files_are_local
 from visual_duplicate_checker import batch_duplicate_check
 from automatic_selector import AutomaticSelector
 
-class FileMover(QObject):
+# --- RENAMED and REFACTORED: From FileSorter/FileMover to a single ActionWorker ---
+class ActionWorker(QObject):
     """
-    Worker to move files to a destination folder in a separate thread.
+    A single worker to process all file actions: sorting, moving, and recycling.
     """
-    finished = Signal(int, int)
+    finished = Signal(str)
     progress_log = Signal(str)
 
-    def __init__(self, files_to_move, destination_folder):
+    def __init__(self, action_config):
         super().__init__()
-        self.files_to_move = files_to_move
-        self.destination_folder = destination_folder
+        self.config = action_config
 
     def run(self):
-        os.makedirs(self.destination_folder, exist_ok=True)
-        moved_count = 0
-        failed_count = 0
-        for file_path in self.files_to_move:
-            try:
-                if os.path.exists(file_path):
-                    file_name = os.path.basename(file_path)
-                    destination_path = os.path.join(self.destination_folder, file_name)
-                    # --- ADDED: Prevent overwriting files with the same name ---
-                    if os.path.exists(destination_path):
-                        base, ext = os.path.splitext(file_name)
-                        i = 1
-                        while os.path.exists(destination_path):
-                            destination_path = os.path.join(self.destination_folder, f"{base}_{i}{ext}")
-                            i += 1
-                    
-                    shutil.move(file_path, destination_path)
-                    message = f"MOVED: {os.path.basename(file_path)} to {os.path.basename(self.destination_folder)}"
-                    logging.info(message)
-                    self.progress_log.emit(message)
-                    moved_count += 1
-                else:
-                    message = f"ERROR: The file '{os.path.basename(file_path)}' no longer exists."
-                    logging.warning(message)
-                    self.progress_log.emit(message)
-                    failed_count += 1
-            except Exception as e:
-                message = f"ERROR while moving {os.path.basename(file_path)}: {e}"
-                logging.error(message)
-                self.progress_log.emit(message)
-                failed_count += 1
-        self.finished.emit(moved_count, failed_count)
+        # Unpack the configuration dictionary
+        files_to_sort = self.config.get('files_to_sort', [])
+        remains_to_process = self.config.get('remains_to_process', [])
+        remains_action = self.config.get('remains_action', 'none')
+        remains_dest_folder = self.config.get('remains_dest_folder')
+        base_sort_folder = self.config.get('base_sort_folder')
 
-# --- NEW: Worker to sort originals and edits into subfolders ---
-class FileSorter(QObject):
-    """
-    Worker to sort original and edited files into their respective subfolders.
-    """
-    finished = Signal(int, int)
-    progress_log = Signal(str)
+        originals_folder = os.path.join(base_sort_folder, "Originals")
+        edits_folder = os.path.join(base_sort_folder, "Last Edited")
 
-    def __init__(self, files_to_sort, base_folder):
-        super().__init__()
-        self.files_to_sort = files_to_sort
-        self.originals_folder = os.path.join(base_folder, "Originals")
-        self.edits_folder = os.path.join(base_folder, "Last Edited")
+        # --- 1. Perform Sorting ---
+        if files_to_sort:
+            os.makedirs(originals_folder, exist_ok=True)
+            os.makedirs(edits_folder, exist_ok=True)
+            for sort_info in files_to_sort:
+                original_path = sort_info.get('original')
+                edited_path = sort_info.get('edited')
+                if original_path:
+                    self._move_file(original_path, originals_folder, "SORTED")
+                if edited_path and edited_path != original_path:
+                    self._move_file(edited_path, edits_folder, "SORTED")
 
-    def run(self):
-        os.makedirs(self.originals_folder, exist_ok=True)
-        os.makedirs(self.edits_folder, exist_ok=True)
+        # --- 2. Process Remaining Files ---
+        if remains_action == 'recycle':
+            if not send2trash:
+                self.progress_log.emit("ERROR: send2trash library not found. Please run 'pip install send2trash'.")
+            else:
+                for path in remains_to_process:
+                    self._recycle_file(path)
+        elif remains_action == 'move':
+            os.makedirs(remains_dest_folder, exist_ok=True)
+            for path in remains_to_process:
+                self._move_file(path, remains_dest_folder, "MOVED")
         
-        moved_count = 0
-        failed_count = 0
-        
-        for sort_info in self.files_to_sort:
-            original_path = sort_info.get('original')
-            edited_path = sort_info.get('edited')
+        self.finished.emit("All file actions completed.")
 
-            # Move original
-            if original_path:
-                moved, failed = self._move_file(original_path, self.originals_folder)
-                moved_count += moved
-                failed_count += failed
-
-            # Move edited, ensuring it's not the same file as the original
-            if edited_path and edited_path != original_path:
-                moved, failed = self._move_file(edited_path, self.edits_folder)
-                moved_count += moved
-                failed_count += failed
-        
-        self.finished.emit(moved_count, failed_count)
-
-    def _move_file(self, file_path, destination_folder):
-        """Helper to move a single file and return (moved_count, failed_count)."""
+    def _move_file(self, file_path, destination_folder, action_verb="MOVED"):
+        """Helper to move a single file safely."""
         try:
             if os.path.exists(file_path):
                 file_name = os.path.basename(file_path)
@@ -107,31 +76,33 @@ class FileSorter(QObject):
                         destination_path = os.path.join(destination_folder, f"{base}_{i}{ext}")
                         i += 1
                 shutil.move(file_path, destination_path)
-                message = f"SORTED: {file_name} to {os.path.basename(destination_folder)}"
-                logging.info(message)
+                message = f"{action_verb}: {file_name} to {os.path.basename(destination_folder)}"
                 self.progress_log.emit(message)
-                return 1, 0
             else:
-                message = f"ERROR: The file '{os.path.basename(file_path)}' no longer exists for sorting."
-                logging.warning(message)
-                self.progress_log.emit(message)
-                return 0, 1
+                self.progress_log.emit(f"SKIP: File no longer exists at {file_path}")
         except Exception as e:
-            message = f"ERROR while sorting {os.path.basename(file_path)}: {e}"
-            logging.error(message)
-            self.progress_log.emit(message)
-            return 0, 1
+            self.progress_log.emit(f"ERROR moving {os.path.basename(file_path)}: {e}")
+
+    def _recycle_file(self, file_path):
+        """Helper to send a single file to the Recycle Bin."""
+        try:
+            if os.path.exists(file_path):
+                send2trash(file_path)
+                self.progress_log.emit(f"RECYCLED: {os.path.basename(file_path)}")
+            else:
+                self.progress_log.emit(f"SKIP: File no longer exists at {file_path}")
+        except Exception as e:
+            self.progress_log.emit(f"ERROR recycling {os.path.basename(file_path)}: {e}")
+
 
 class DuplicateChecker(QObject):
     """
     The main worker for the entire duplicate check process.
-    Handles scanning, downloading, hashing, and selection.
     """
     scan_summary_ready = Signal(dict)
     download_progress = Signal(int, int)
-    manual_check_finished = Signal(dict, dict, list) # stats, all_file_data, groups
-    # --- CHANGED: Signal now carries files_to_sort list ---
-    automatic_selection_finished = Signal(list, list, dict) # files_for_removal, files_to_sort, stats
+    manual_check_finished = Signal(dict, dict, list)
+    automatic_selection_finished = Signal(list, list, dict)
     progress_updated = Signal(int, str)
     error_occurred = Signal(str)
 
@@ -145,7 +116,6 @@ class DuplicateChecker(QObject):
 
     def run(self):
         try:
-            # Step 1: Scan
             self.progress_updated.emit(0, "Scanning folder...")
             scan_summary = scan_directory(self.folder_path)
             self.scan_summary_ready.emit(scan_summary)
@@ -160,11 +130,9 @@ class DuplicateChecker(QObject):
                     self.automatic_selection_finished.emit([], [], check_statistics)
                 return
 
-            # Step 2: Download (if needed)
             download_duration = ensure_files_are_local(candidate_paths, self.download_progress.emit)
             check_statistics["download_time"] = download_duration
 
-            # Step 3: Hashing, validation, and comparison
             check_results, all_file_data, groups = batch_duplicate_check(
                 candidate_paths, self.threshold, self.progress_updated.emit
             )
@@ -181,15 +149,11 @@ class DuplicateChecker(QObject):
             if self.mode == "Manual review":
                 self.manual_check_finished.emit(check_statistics, all_file_data, groups)
             else:
-                # Step 4: Automatic selection
                 start_time_auto = time.monotonic()
-                # --- CHANGED: Capturing both return values ---
                 files_for_removal, files_to_sort = self.automatic_selector.run_automatic_selection(
                     groups, self.strategy, all_file_data
                 )
                 check_statistics["automatic_selection_time"] = time.monotonic() - start_time_auto
-                logging.info(f"Automatic selection completed in {check_statistics['automatic_selection_time']:.2f} seconds.")
-                # --- CHANGED: Emitting both lists ---
                 self.automatic_selection_finished.emit(files_for_removal, files_to_sort, check_statistics)
 
         except Exception as e:
